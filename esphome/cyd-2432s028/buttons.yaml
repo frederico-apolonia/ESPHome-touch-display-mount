@@ -71,8 +71,8 @@ substitutions:
   DIRECT_ACTIONS: "true"
 
   # Button 1
-  BTN1_ENTITY: "light.desk_lamp"
-  BTN1_LABEL: "Desk"
+  BTN1_ENTITY: "light.reading_light"
+  BTN1_LABEL: "Reading"
   BTN1_ICON: "\U000F095F"
 
   # Button 2
@@ -81,14 +81,18 @@ substitutions:
   BTN2_ICON: "\U000F0769"
 
   # Button 3
-  BTN3_ENTITY: "light.globe_lamp"
-  BTN3_LABEL: "Globe"
-  BTN3_ICON: "\U000F08DD"
+  BTN3_ENTITY: "cover.office_blinds_cover"
+  BTN3_LABEL: "Blinds"
+  BTN3_ICON: "\U000F00AC"
 
   # Button 4
   BTN4_ENTITY: "light.ambient_light"
   BTN4_LABEL: "Ambient"
   BTN4_ICON: "\U000F1051"
+
+  # Temperature and weather — shown below the time display
+  BTN_TEMP_ENTITY: "sensor.openweathermap_temperature"
+  BTN_WEATHER_ENTITY: "sensor.openweathermap_weather"
 # ==========================================================
 
 esphome:
@@ -108,20 +112,30 @@ logger:
 
 api:
   encryption:
-    key: "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+    key: !secret api_encryption_key
 
 ota:
   - platform: esphome
-    password: "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+    password: !secret ota_password
 
 wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
-  ap:
-    ssid: "Smartdisplay Fallback Hotspot"
-    password: "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
 
 captive_portal:
+
+globals:
+  - id: active_entity
+    type: std::string
+    restore_value: no
+
+  - id: active_control_kind
+    type: std::string
+    restore_value: no
+
+  - id: active_value_suffix
+    type: std::string
+    restore_value: no
 
 # Use Home Assistant time so the display always matches your HA timezone.
 time:
@@ -158,7 +172,7 @@ font:
   - file: 'fonts/materialdesignicons-webfont.ttf'
     id: materialdesign_icons
     size: 35
-    glyphs: ["\U000F095F", "\U000F0769", "\U000F08DD", "\U000F1051"]
+    glyphs: ["\U000F095F", "\U000F0769", "\U000F00AC", "\U000F1051"]
 
 color:
   - id: ACTIVE
@@ -175,6 +189,31 @@ sensor:
     name: "Uptime"
     id: uptime_s
     update_interval: 15s
+
+  # Brightness attributes for the long-press slider overlay
+  - platform: homeassistant
+    id: btn1_brightness
+    entity_id: ${BTN1_ENTITY}
+    attribute: brightness
+    on_value: { then: [ script.execute: ui_refresh ] }
+
+  - platform: homeassistant
+    id: btn3_position
+    entity_id: ${BTN3_ENTITY}
+    attribute: current_position
+    on_value: { then: [ script.execute: ui_refresh ] }
+
+  - platform: homeassistant
+    id: btn4_brightness
+    entity_id: ${BTN4_ENTITY}
+    attribute: brightness
+    on_value: { then: [ script.execute: ui_refresh ] }
+
+  # Temperature for the header info line
+  - platform: homeassistant
+    id: temperature_raw
+    entity_id: ${BTN_TEMP_ENTITY}
+    on_value: { then: [ script.execute: ui_refresh ] }
 
 binary_sensor:
   - platform: status
@@ -228,6 +267,12 @@ text_sensor:
     id: smartdisplay_action
     name: "SmartDisplay Action"
     icon: mdi:gesture-tap-button
+
+  # Weather condition string for the header info line
+  - platform: homeassistant
+    id: weather_state
+    entity_id: ${BTN_WEATHER_ENTITY}
+    on_value: { then: [ script.execute: ui_refresh ] }
 
   - platform: template
     name: "Uptime (formatted)"
@@ -328,7 +373,7 @@ display:
   - platform: ili9xxx
     id: my_display
     spi_id: lcd
-    model: ILI9341
+    model: ST7789V #ILI9341
     color_palette: 8BIT
     cs_pin: 15
     dc_pin: 2
@@ -338,7 +383,7 @@ display:
 
     transform:
       swap_xy: true
-      mirror_x: false
+      mirror_x: true
       mirror_y: false
 
     dimensions:
@@ -375,7 +420,7 @@ lvgl:
         - label:
             id: lbl_date
             x: 0
-            y: 30
+            y: 20
             width: 320
             text_align: CENTER
             text_font: notice_text
@@ -385,22 +430,33 @@ lvgl:
         - label:
             id: lbl_time
             x: 0
-            y: 55
+            y: 42
             width: 320
             text_align: CENTER
             text_font: big_text
             text_color: 0xFFFFFF
             text: ""
 
+        # Temperature and weather shown below the clock
+        - label:
+            id: lbl_weather_info
+            x: 0
+            y: 112
+            width: 320
+            text_align: CENTER
+            text_font: notice_text
+            text_color: 0xB0B0B0
+            text: ""
+
         # ---------------------------------------------------
-        # LVGL Button 1
-        # - ALWAYS publishes a HA-friendly action: btn1_press
-        # - Optional direct action: light.toggle for BTN1_ENTITY
+        # LVGL Button 1 — Reading Light
+        # BTN2 (Ceiling) is intentionally omitted from the UI
+        # (no entity assigned). Buttons 1/3/4 are evenly spaced.
         # ---------------------------------------------------
         - button:
             id: btn1
-            x: 25
-            y: 140
+            x: 35
+            y: 148
             checkable: true
             widgets:
               - label:
@@ -409,25 +465,34 @@ lvgl:
                   text_color: !lambda return id(ACTIVE);
                   text: "${BTN1_ICON}"
             on_click:
-              # ALWAYS: publish action to Home Assistant (state trigger friendly)
-              - script.execute:
-                  id: publish_action
-                  action: "btn1_press"
-
-              # OPTIONAL: direct HA service call (plug & play)
               - if:
                   condition:
-                    lambda: |-
-                      return std::string("${DIRECT_ACTIONS}") == "true";
+                    lambda: "return lv_obj_has_flag(id(brightness_overlay), LV_OBJ_FLAG_HIDDEN);"
                   then:
-                    - homeassistant.action:
-                        action: light.toggle
-                        data:
-                          entity_id: ${BTN1_ENTITY}
+                    - script.execute:
+                        id: publish_action
+                        action: "btn1_press"
+                    - if:
+                        condition:
+                          lambda: |-
+                            return std::string("${DIRECT_ACTIONS}") == "true";
+                        then:
+                          - homeassistant.action:
+                              action: light.toggle
+                              data:
+                                entity_id: ${BTN1_ENTITY}
+            on_long_press:
+              - script.execute:
+                  id: open_value_overlay
+                  title: "${BTN1_LABEL}"
+                  entity: "${BTN1_ENTITY}"
+                  control_kind: "light_brightness"
+                  initial_value: !lambda "return id(btn1_brightness).state;"
+                  icon_text: "${BTN1_ICON}"
 
         - label:
-            x: 25
-            y: 205
+            x: 35
+            y: 213
             width: 60
             text_align: CENTER
             text_font: label
@@ -435,51 +500,12 @@ lvgl:
             text: "${BTN1_LABEL}"
 
         # ---------------------------------------------------
-        # LVGL Button 2
-        # - ALWAYS publishes a HA-friendly action: btn2_press
-        # ---------------------------------------------------
-        - button:
-            id: btn2
-            x: 95
-            y: 140
-            checkable: true
-            widgets:
-              - label:
-                  align: CENTER
-                  text_font: materialdesign_icons
-                  text_color: !lambda return id(ACTIVE);
-                  text: "${BTN2_ICON}"
-            on_click:
-              - script.execute:
-                  id: publish_action
-                  action: "btn2_press"
-              - if:
-                  condition:
-                    lambda: |-
-                      return std::string("${DIRECT_ACTIONS}") == "true";
-                  then:
-                    - homeassistant.action:
-                        action: light.toggle
-                        data:
-                          entity_id: ${BTN2_ENTITY}
-
-        - label:
-            x: 95
-            y: 205
-            width: 60
-            text_align: CENTER
-            text_font: label
-            text_color: 0xFFFFFF
-            text: "${BTN2_LABEL}"
-
-        # ---------------------------------------------------
-        # LVGL Button 3
-        # - ALWAYS publishes a HA-friendly action: btn3_press
+        # LVGL Button 3 — Blinds  (x=130, centre slot)
         # ---------------------------------------------------
         - button:
             id: btn3
-            x: 165
-            y: 140
+            x: 130
+            y: 148
             checkable: true
             widgets:
               - label:
@@ -488,22 +514,34 @@ lvgl:
                   text_color: !lambda return id(ACTIVE);
                   text: "${BTN3_ICON}"
             on_click:
-              - script.execute:
-                  id: publish_action
-                  action: "btn3_press"
               - if:
                   condition:
-                    lambda: |-
-                      return std::string("${DIRECT_ACTIONS}") == "true";
+                    lambda: "return lv_obj_has_flag(id(brightness_overlay), LV_OBJ_FLAG_HIDDEN);"
                   then:
-                    - homeassistant.action:
-                        action: light.toggle
-                        data:
-                          entity_id: ${BTN3_ENTITY}
+                    - script.execute:
+                        id: publish_action
+                        action: "btn3_press"
+                    - if:
+                        condition:
+                          lambda: |-
+                            return std::string("${DIRECT_ACTIONS}") == "true";
+                        then:
+                          - homeassistant.action:
+                              action: cover.toggle
+                              data:
+                                entity_id: ${BTN3_ENTITY}
+            on_long_press:
+              - script.execute:
+                  id: open_value_overlay
+                  title: "${BTN3_LABEL}"
+                  entity: "${BTN3_ENTITY}"
+                  control_kind: "cover_position"
+                  initial_value: !lambda "return id(btn3_position).state;"
+                  icon_text: "${BTN3_ICON}"
 
         - label:
-            x: 165
-            y: 205
+            x: 130
+            y: 213
             width: 60
             text_align: CENTER
             text_font: label
@@ -511,13 +549,12 @@ lvgl:
             text: "${BTN3_LABEL}"
 
         # ---------------------------------------------------
-        # LVGL Button 4
-        # - ALWAYS publishes a HA-friendly action: btn4_press
+        # LVGL Button 4 — Ambient Light  (x=225, right slot)
         # ---------------------------------------------------
         - button:
             id: btn4
-            x: 235
-            y: 140
+            x: 225
+            y: 148
             checkable: true
             widgets:
               - label:
@@ -526,27 +563,136 @@ lvgl:
                   text_color: !lambda return id(ACTIVE);
                   text: "${BTN4_ICON}"
             on_click:
-              - script.execute:
-                  id: publish_action
-                  action: "btn4_press"
               - if:
                   condition:
-                    lambda: |-
-                      return std::string("${DIRECT_ACTIONS}") == "true";
+                    lambda: "return lv_obj_has_flag(id(brightness_overlay), LV_OBJ_FLAG_HIDDEN);"
                   then:
-                    - homeassistant.action:
-                        action: light.toggle
-                        data:
-                          entity_id: ${BTN4_ENTITY}
+                    - script.execute:
+                        id: publish_action
+                        action: "btn4_press"
+                    - if:
+                        condition:
+                          lambda: |-
+                            return std::string("${DIRECT_ACTIONS}") == "true";
+                        then:
+                          - homeassistant.action:
+                              action: light.toggle
+                              data:
+                                entity_id: ${BTN4_ENTITY}
+            on_long_press:
+              - script.execute:
+                  id: open_value_overlay
+                  title: "${BTN4_LABEL}"
+                  entity: "${BTN4_ENTITY}"
+                  control_kind: "light_brightness"
+                  initial_value: !lambda "return id(btn4_brightness).state;"
+                  icon_text: "${BTN4_ICON}"
 
         - label:
-            x: 235
-            y: 205
+            x: 225
+            y: 213
             width: 60
             text_align: CENTER
             text_font: label
             text_color: 0xFFFFFF
             text: "${BTN4_LABEL}"
+
+        # ---------- VALUE SLIDER OVERLAY ----------
+        - obj:
+            id: brightness_overlay
+            x: 0
+            y: 0
+            width: 320
+            height: 240
+            bg_color: 0x000000
+            bg_opa: TRANSP
+            hidden: true
+            scrollable: false
+            scrollbar_mode: 'OFF'
+            pad_left: 0
+            pad_right: 0
+            pad_top: 0
+            pad_bottom: 0
+            border_width: 0
+            widgets:
+              - obj:
+                  id: brightness_overlay_bg
+                  x: 0
+                  y: 0
+                  width: 320
+                  height: 240
+                  bg_color: 0x000000
+                  bg_opa: 75%
+                  border_width: 0
+                  clickable: true
+                  scrollable: false
+                  on_short_click:
+                    - lvgl.widget.hide: brightness_overlay
+
+              - label:
+                  id: overlay_title
+                  align: TOP_MID
+                  y: 10
+                  text: "Light"
+                  text_font: notice_text
+                  text_color: 0xFFFFFF
+                  text_opa: 100%
+
+              - label:
+                  id: overlay_value
+                  align: TOP_MID
+                  y: 32
+                  text: "100 %"
+                  text_font: notice_text
+                  text_color: 0xFFFFFF
+                  text_opa: 80%
+
+              - slider:
+                  id: overlay_slider
+                  align: CENTER
+                  y: 18
+                  width: 96
+                  height: 160
+                  min_value: 0
+                  max_value: 100
+                  value: 100
+                  adv_hittest: false
+
+                  bg_color: 0x939391
+                  bg_opa: 100%
+                  radius: 28
+                  border_width: 0
+
+                  indicator:
+                    bg_color: 0xFEC600
+                    bg_opa: 100%
+                    radius: 28
+
+                  knob:
+                    bg_opa: 0%
+                    border_width: 0
+                    shadow_width: 0
+                    pad_all: 10
+
+                  on_value:
+                    - script.execute:
+                        id: slider_preview
+                        value: !lambda "return x;"
+
+                  on_release:
+                    - script.execute:
+                        id: slider_commit
+                        value: !lambda "return lv_slider_get_value(id(overlay_slider));"
+
+                  widgets:
+                    - label:
+                        id: overlay_icon
+                        align: BOTTOM_MID
+                        y: -10
+                        text_font: materialdesign_icons
+                        text_color: 0xFFFFFF
+                        text: "${BTN1_ICON}"
+                        clickable: false
 
 script:
   # ----------------------------------------------------------
@@ -569,6 +715,73 @@ script:
           id: smartdisplay_action
           state: ""
 
+  - id: slider_preview
+    parameters:
+      value: int
+    then:
+      - lambda: |-
+          char buf[20];
+          snprintf(buf, sizeof(buf), "%d%s", value, id(active_value_suffix).c_str());
+          lv_label_set_text(id(overlay_value), buf);
+
+  - id: slider_commit
+    parameters:
+      value: int
+    then:
+      - lambda: |-
+          ESP_LOGD("slider", "slider_commit: value=%d kind=%s entity=%s",
+                   value, id(active_control_kind).c_str(), id(active_entity).c_str());
+      - if:
+          condition:
+            lambda: "return id(active_control_kind) == \"light_brightness\";"
+          then:
+            - homeassistant.action:
+                action: light.turn_on
+                data:
+                  entity_id: !lambda "return id(active_entity);"
+                  brightness_pct: !lambda "return value;"
+          else:
+            - if:
+                condition:
+                  lambda: "return id(active_control_kind) == \"cover_position\";"
+                then:
+                  - homeassistant.action:
+                      action: cover.set_cover_position
+                      data:
+                        entity_id: !lambda "return id(active_entity);"
+                        position: !lambda "return value;"
+
+  - id: open_value_overlay
+    parameters:
+      title: string
+      entity: string
+      control_kind: string
+      initial_value: float
+      icon_text: string
+    then:
+      - lambda: |-
+          id(active_entity) = entity;
+          id(active_control_kind) = control_kind;
+          id(active_value_suffix) = " %";
+
+          int pct;
+          if (control_kind == "light_brightness") {
+            pct = isnan(initial_value) ? 100 : (int)lround((initial_value / 255.0f) * 100.0f);
+          } else {
+            pct = isnan(initial_value) ? 0 : (int)lround(initial_value);
+          }
+          if (pct < 0) pct = 0;
+          if (pct > 100) pct = 100;
+
+          lv_label_set_text(id(overlay_title), title.c_str());
+          lv_label_set_text(id(overlay_icon), icon_text.c_str());
+          lv_slider_set_value(id(overlay_slider), pct, LV_ANIM_OFF);
+
+          char buf[20];
+          snprintf(buf, sizeof(buf), "%d %%", pct);
+          lv_label_set_text(id(overlay_value), buf);
+      - lvgl.widget.show: brightness_overlay
+
   - id: ui_refresh
     mode: queued
     then:
@@ -577,11 +790,6 @@ script:
           id: btn1
           state:
             checked: !lambda return id(ha_state_btn1).state;
-
-      - lvgl.widget.update:
-          id: btn2
-          state:
-            checked: !lambda return id(ha_state_btn2).state;
 
       - lvgl.widget.update:
           id: btn3
@@ -593,6 +801,22 @@ script:
           state:
             checked: !lambda return id(ha_state_btn4).state;
 
+      # Temperature + weather line
+      - lvgl.label.update:
+          id: lbl_weather_info
+          text: !lambda |-
+            float t = id(temperature_raw).state;
+            std::string weather = id(weather_state).state.c_str();
+            char buf[64];
+            if (!isnan(t) && !weather.empty()) {
+              snprintf(buf, sizeof(buf), "%.0f °C, %s", t, weather.c_str());
+            } else if (!isnan(t)) {
+              snprintf(buf, sizeof(buf), "%.0f °C", t);
+            } else {
+              snprintf(buf, sizeof(buf), "%s", weather.c_str());
+            }
+            return std::string(buf);
+
       # Render current time (HH:MM)
       - lvgl.label.update:
           id: lbl_time
@@ -602,12 +826,12 @@ script:
             snprintf(buf, sizeof(buf), "%02d:%02d", now.hour, now.minute);
             return std::string(buf);
 
-      # Render localized date in German (adjust to your language if needed)
+      # Render localized date in English (adjust to your language if needed)
       - lvgl.label.update:
           id: lbl_date
           text: !lambda |-
-            static const char* days[]   = {"", "Sonntag","Montag","Dienstag","Mittwoch","Donnerstag","Freitag","Samstag"};
-            static const char* months[] = {"","Januar","Februar","März","April","Mai","Juni","Juli","August","September","Oktober","November","Dezember"};
+            static const char* days[]   = {"", "Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"};
+            static const char* months[] = {"","January","February","March","April","May","June","July","August","September","October","November","December"};
             auto now = id(homeassistant_time).now();
             static char buf[40];
             snprintf(buf, sizeof(buf), "%s, %d. %s", days[now.day_of_week], now.day_of_month, months[now.month]);

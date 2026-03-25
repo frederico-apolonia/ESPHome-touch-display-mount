@@ -261,12 +261,53 @@ Use the wiring table below, which shows how to put everything together.
 
 # 🚀 Installation
 
-1.  Open ESPHome in Home Assistant
-2.  Create a new device
-3.  Copy the appropriate YAML file
-4.  Edit the **USER CONFIG / substitutions** section at the top of the YAML (entities, labels, icons)
-5.  Adjust WiFi credentials
-6.  Flash the device
+## 1. Install ESPHome (macOS with Homebrew)
+
+```bash
+brew install esphome
+```
+
+Verify the installation:
+
+```bash
+esphome version
+```
+
+## 2. Create `secrets.yaml`
+
+The YAML configs reference credentials via `!secret`. Create the file at:
+
+```
+esphome/cyd-2432s028/secrets.yaml
+```
+
+with the following entries (fill in your own values):
+
+```yaml
+api_encryption_key: ""   # 32-byte base64 key — generate with: esphome generate-encryption-key
+ota_password: ""         # any password you choose for OTA updates
+wifi_ssid: ""            # your Wi-Fi network name
+wifi_password: ""        # your Wi-Fi password
+```
+
+> `secrets.yaml` is listed in `.gitignore` and will never be committed.
+
+## 3. Compile and flash the CYD-2432S028
+
+Connect the board via USB, then run from the repo root:
+
+```bash
+# home-like tile UI
+esphome run esphome/cyd-2432s028/home-like.yml
+
+# or the lockscreen buttons UI
+esphome run esphome/cyd-2432s028/buttons.yaml
+```
+
+`esphome run` compiles the firmware and flashes it over USB in one step.
+For subsequent updates you can flash over Wi-Fi (OTA) — ESPHome will detect the device automatically.
+
+---
 
 Available YAML variants (pick **one UI** for your **hardware**):
 
